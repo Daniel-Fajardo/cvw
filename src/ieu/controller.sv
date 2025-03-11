@@ -275,12 +275,12 @@ module controller import cvw::*;  #(parameter cvw_t P) (
       7'b0110011: if (RFunctD)
                       ControlsD = `CTRLW'b1_000_00_00_000_0_1_0_0_0_0_0_0_0_00_0_0; // R-type 
                   else if (MFunctD)
-                      ControlsD = `CTRLW'b1_000_00_00_011_0_0_0_0_0_0_0_0_1_00_0_0; // Multiply/Divide
+                      ControlsD = `CTRLW'b1_000_00_00_011_0_0_0_0_0_0_0_0_1_00_0_0; // mul/div *** Replace with your logic
       7'b0110111:     ControlsD = `CTRLW'b1_100_01_00_000_0_0_0_1_0_0_0_0_0_00_0_0; // lui
       7'b0111011: if (RWFunctD)
                       ControlsD = `CTRLW'b1_000_00_00_000_0_1_0_0_1_0_0_0_0_00_0_0; // R-type W instructions for RV64i
                   else if (MWFunctD)
-                      ControlsD = `CTRLW'b1_000_00_00_011_0_0_0_0_1_0_0_0_1_00_0_0; // W-type Multiply/Divide
+                      ControlsD = `CTRLW'b1_000_00_00_011_0_0_0_0_1_0_0_0_1_00_0_0; // mulw *** Replace with your logic
       7'b1100011: if (BFunctD)   
                       ControlsD = `CTRLW'b0_010_11_00_000_1_0_0_0_0_0_0_0_0_00_0_0; // branches
       7'b1100111: if (JRFunctD)
