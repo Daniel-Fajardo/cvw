@@ -61,22 +61,21 @@ module mul #(parameter XLEN) (
   // MULHSU = (Funct3E == 3'b010);
   // MULHU = (Funct3E == 3'b011);
 
+  assign PP1E = {2'b00, Pp};
+  
   always_comb
     case (Funct3E)
       3'b001: begin // MULH
-              PP1E = {2'b00, Pp};
               PP2E = {2'b00, ~PA, {(XLEN-1){1'b0}}};
               PP3E = {2'b00, ~PB, {(XLEN-1){1'b0}}};
               PP4E = {1'b1, Pm, {(XLEN-3){1'b0}}, 1'b1, {(XLEN){1'b0}}};
               end
       3'b010: begin // MULHSU
-              PP1E = {2'b00, Pp};
               PP2E = {2'b00, PA, {(XLEN-1){1'b0}}};
               PP3E = {2'b00, ~PB, {(XLEN-1){1'b0}}};
               PP4E = {1'b1, ~Pm, {(XLEN-2){1'b0}}, 1'b1, {(XLEN-1){1'b0}}};
               end
       default: begin // MULHU
-              PP1E = {2'b00, Pp};
               PP2E = {2'b00, PA, {(XLEN-1){1'b0}}};
               PP3E = {2'b00, PB, {(XLEN-1){1'b0}}};
               PP4E = {1'b0, Pm, {(XLEN*2-2){1'b0}}};
