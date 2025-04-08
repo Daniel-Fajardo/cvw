@@ -21,7 +21,13 @@ module testbench_fma16;
   // at start of test, load vectors and pulse reset
   initial
     begin
-      $readmemh("tests/fmul_0.tv", testvectors);
+      // $readmemh("tests/fmul_0.tv", testvectors);
+      // $readmemh("work/fmul_1.tv", testvectors);
+      // $readmemh("work/fmul_2.tv", testvectors);
+      // $readmemh("work/fadd_0.tv", testvectors);
+      // $readmemh("work/fadd_1.tv", testvectors);
+      $readmemh("work/fadd_2.tv", testvectors);
+      // $readmemh("work/fma_special_rn.tv", testvectors);
       vectornum = 0; errors = 0;
       reset = 1; #22; reset = 0;
     end

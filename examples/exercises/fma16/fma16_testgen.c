@@ -86,8 +86,8 @@ void genCase(FILE *fptr, float16_t x, float16_t y, float16_t z, int mul, int add
     if ((softfloat_exceptionFlags >> 1) % 2) fprintf(fptr, "// skip underflow: ");
 
     // skip special cases if requested
-    if (resultmag.v == 0x0000 && !zeroAllowed) fprintf(fptr, "// skip zero: ");
-    if ((resultmag.v == 0x7C00 || resultmag.v == 0x7BFF) && !infAllowed)  fprintf(fptr, "// Skip inf: ");
+    /*if (resultmag.v == 0x0000 && !zeroAllowed) fprintf(fptr, "// skip zero: ");
+    if ((resultmag.v == 0x7C00 || resultmag.v == 0x7BFF) && !infAllowed)  fprintf(fptr, "// Skip inf: ");*/
     if (resultmag.v >  0x7C00 && !nanAllowed)  fprintf(fptr, "// Skip NaN: ");
 
     // print the test case
@@ -148,14 +148,14 @@ void genAddTests(uint16_t *e, uint16_t *f, int sgn, char *testName, char *desc, 
         exit(1);
     }
     prepTests(e, f, testName, desc, cases, fptr, &numCases);
-    z.v = 0x0000;
+    y.v = 0x3C00;
     for (i=0; i < numCases; i++) { 
         x.v = cases[i].v;
         for (j=0; j<numCases; j++) {
-            y.v = cases[j].v;
+            z.v = cases[j].v;
             for (k=0; k<=sgn; k++) {
-                y.v ^= (k<<15);
-                genCase(fptr, x, y, z, 0, 1, 0, 1, roundingMode, zeroAllowed, infAllowed, nanAllowed);
+                z.v ^= (k<<15);
+                genCase(fptr, x, y, z, 0, 1, 0, 0, roundingMode, zeroAllowed, infAllowed, nanAllowed);
             }
         }
     }
@@ -205,7 +205,7 @@ int main()
 
     // Add your cases here
     genMulTests(medExponents, medFracts, 0, "fmul_1", "// Multiply with exponent of 8 and -7, significand of 1.01, 1.001, and 1.00001, RZ", 0, 0, 0, 0);
-    genMulTests(medExponents, medFracts, 1, "fmul_2", "// Multiply negative with exponent of 8 and -7, significand of 1.01, 1.001, and 1.00001, RZ", 0, 0, 0, 0);
+    genMulTests(hardExponents, hardFracts, 1, "fmul_2", "// Multiply negative with exponent of 8 and -7, significand of 1.01, 1.001, and 1.00001, RZ", 0, 0, 0, 0);
 
     genAddTests(easyExponents, easyFracts, 0, "fadd_0", "// Add with exponent of 8 and -7, significand of 1.0 and 1.1, RZ", 0, 0, 0, 0);
     genAddTests(medExponents, medFracts, 0, "fadd_1", "// Add with exponent of 8 and -7, significand of 1.01, 1.001, and 1.00001, RZ", 0, 0, 0, 0);
