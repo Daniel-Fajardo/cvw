@@ -163,7 +163,7 @@ void genAddTests(uint16_t *e, uint16_t *f, int sgn, char *testName, char *desc, 
 }
 
 void genMATests(uint16_t *e, uint16_t *f, int sgn, char *testName, char *desc, int roundingMode, int zeroAllowed, int infAllowed, int nanAllowed) {
-    int i, j, k, numCases;
+    int i, j, l, k, numCases;
     float16_t x, y, z;
     float16_t cases[100000];
     FILE *fptr;
@@ -175,14 +175,16 @@ void genMATests(uint16_t *e, uint16_t *f, int sgn, char *testName, char *desc, i
         exit(1);
     }
     prepTests(e, f, testName, desc, cases, fptr, &numCases);
-    z.v = 0x0000;
     for (i=0; i < numCases; i++) { 
         x.v = cases[i].v;
         for (j=0; j<numCases; j++) {
             y.v = cases[j].v;
-            for (k=0; k<=sgn; k++) {
-                y.v ^= (k<<15);
-                genCase(fptr, x, y, z, 1, 1, 0, 0, roundingMode, zeroAllowed, infAllowed, nanAllowed);
+            for (l=0; l<numCases; l++) {
+                z.v = cases[l].v;
+                for (k=0; k<=sgn; k++) {
+                    z.v ^= (k<<15);
+                    genCase(fptr, x, y, z, 1, 1, 0, 0, roundingMode, zeroAllowed, infAllowed, nanAllowed);
+                }
             }
         }
     }
