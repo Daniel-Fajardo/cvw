@@ -29,8 +29,13 @@ module testbench_fma16;
       // $readmemh("work/fadd_2.tv", testvectors);
       // $readmemh("work/fma_0.tv", testvectors);
       // $readmemh("work/fma_1.tv", testvectors);
-      $readmemh("work/fma_2.tv", testvectors);
-      // $readmemh("work/fma_special_rn.tv", testvectors);
+      // $readmemh("work/fma_2.tv", testvectors);
+      // $readmemh("work/fma_special_rz.tv", testvectors);
+      $readmemh("tests/baby_torture_rz.tv", testvectors);
+      // $readmemh("tests/baby_torture.tv", testvectors);
+      // $readmemh("tests/fmul_2.tv", testvectors);
+      // $readmemh("tests/fadd_2.tv", testvectors);
+      // $readmemh("tests/fma_2.tv", testvectors);
       vectornum = 0; errors = 0;
       reset = 1; #22; reset = 0;
     end
