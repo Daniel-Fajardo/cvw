@@ -17,10 +17,11 @@ module fma16(input logic [15:0] x, y, z,
         // fma_0 fma_0(x, y, z, mul, add, negp, negz, roundmode, result, flags);
         // fma_1 fma_1(x, y, z, mul, add, negp, negz, roundmode, result, flags);
         // fma_2 fma_2(x, y, z, mul, add, negp, negz, roundmode, result, flags);
-        fma_special_rz fma_special_rz(x, y, z, mul, add, negp, negz, roundmode, result, flags);
+        // fma_special_rz fma_special_rz(x, y, z, mul, add, negp, negz, roundmode, result, flags);
+        fma_special fma_special(x, y, z, mul, add, negp, negz, roundmode, result, flags);
 
 endmodule
-
+/*
 // fmul_0 multiplies two positive half-precision floats with exponents of 0
 // the two inputs will be 16 bits
 // the sign bit will be 0, and the bias will be 15, ie the two inputs will be of the form 0_01111_xxxxxxxxxx
@@ -664,4 +665,407 @@ module fma_special_rz(input logic [15:0] x, y, z,
 
         // assign flags
         assign flags = {nv, of, uf, nx}; // invalid, overflow, underflow, inexact
+endmodule*/
+
+// fma_special performs fma on three signed half-precision floats and handles special cases with every rounding mode
+/*module fma_special(input logic [15:0] x, y, z,
+        input logic mul, add, negp, negz,
+        input logic [1:0] roundmode, // roundtozero (rz)=00, roundtoeven (rne)=01, rounddown (rn)=10, round up (rp)=11
+        output logic [15:0] result,
+        output logic [3:0] flags);
+
+        logic [15:0] Xm, Ym;
+        logic [31:0] Zm, Pm, Tm, Am;
+        logic [31:0] Sm;
+        logic [31:0] Mm;
+        logic [9:0] Rm;
+        logic [22:0] ld;
+        logic [5:0] Xe, Ye, Ze, Pe, Acnt, Mcnt, Me, Tcnt;
+        logic sub, puf, pof, sign, sticky;
+        logic xzero, yzero, zzero, xinf, yinf, zinf, nan, sn; // special cases
+        logic rz, rne, rn, rp; // rounding mode
+        logic l, g, r, t; // least significant, rounding and sticky bits
+        logic rnd, incr, inf, rnzero;
+        logic nv, of, uf, nx; // flags
+        
+        // check for special cases in inputs
+        assign xzero = (x[14:0]==0); // check if any inputs are zero
+        assign yzero = (y[14:0]==0);
+        assign zzero = (z[14:0]==0);
+        assign xinf = (x[14:0]==15'h7c00); // check if any inputs are infinity
+        assign yinf = (y[14:0]==15'h7c00);
+        assign zinf = (z[14:0]==15'h7c00);
+        assign nan = (x[14:10]==5'h1f)&(x[9:0]!=0)|(y[14:10]==5'h1f)&(y[9:0]!=0)|(z[14:10]==5'h1f)&(z[9:0]!=0) // checks for any nan input
+                        |(xzero&yinf&mul)|(yzero&xinf&mul)|((xinf|yinf)&zinf&((x[15]^y[15])^z[15])); // checks for invalid operations including inf*0 and inf-inf
+        
+        // assign mantissas and exponents
+        assign Xm = xzero ? 16'b0 : {1'b1, x[9:0], 5'b0}; // assign mantissas
+        assign Ym = (add&~mul)|yzero ? 16'b0 : {1'b1, y[9:0], 5'b0}; // also check if only multiply, in which y=1
+        assign Zm = (zzero|(mul&~add)) ? 32'b0 : {2'b01, z[9:0], 20'b0}; // also check if only multiply, in which z=0
+        assign Xe = {1'b0, x[14:10]}; // assign exponents
+        assign Ye = (add&~mul) ? 6'b001111 : {1'b0, y[14:10]}; // again check if y=1
+        assign Ze = (mul&~add) ? 6'b0 : {1'b0, z[14:10]}; // again check if z=0
+
+        // determine rounding mode
+        assign rz = (roundmode==2'b00);
+        assign rne = (roundmode==2'b01);
+        assign rn = (roundmode==2'b10);
+        assign rp = (roundmode==2'b11);
+
+        assign sub = ((x[15] ^ y[15]) ^ z[15]); // if signs of x*y and z differ, subtraction will occur, else addition
+
+        assign puf = (Xe + Ye) < 15; // precheck if P will have underflow
+        assign Tcnt = puf ? (15 - (Xe + Ye) + 1) : 6'b0; // if P has underflow, determine shift amount to normalize Pm with Pe==0
+        // 1. Multiply the significands of X and Y: Pm = Xm × Ym
+        assign Tm = Xm * Ym; // temporary Pm
+        always_comb begin // block for assigning Pm
+                if (mul==0)             Pm = {1'b0, Xm, 15'b0}; // if no multiply, Pm = Xm
+                else if (xzero|yzero)   Pm = 32'b0; // if either is 0, Pm = 0
+                // else if (Tcnt>=11&puf)  Pm = {}
+                else if (Tm[31])        Pm = Tm >> (Tcnt+1); // if Tm has msb set, shift so that there is always a zero in msb of Pm
+                else                    Pm = Tm >> Tcnt;
+        end
+        // 2. Add the exponents of X and Y: Pe = Xe + Ye – bias
+        assign Pe = puf ? 6'b0 : ((Tm[31]) ? (Xe + Ye - 15 + 1) : (Xe + Ye - 15)); // need to check for carry bit in Pm, if set than increment Pe 
+
+        // always_comb begin if(mul^add) $display("x: %h, y: %h, z: %h ",x,y,z,"Tcnt: %b ", Tcnt, "Pm: %b, Tm: %b, Zm: %b ", Pm,Tm,Zm,"mul: %b, add: %b",mul,add); end
+        assign pof = (Pe>30&Pm!=0); // precheck if P will have overflow (only necessary if add==0)
+        // always_comb begin if (x==16'h07ff&y==16'h07ff) $display("x: %h, y: %h, z: %h ",x,y,z,"sub: %b ", sub,"Pm: %b, Zm: %b", Pm, Zm, " Pe: %b, Ze: %b", Pe, Ze); end
+        // 3. Determine the alignment shift count: Acnt = (Pe – Ze)
+        // assign Acnt = (Pe - Ze)
+        assign Acnt = ((Pe>=Ze) ? (Pe - Ze) : (Ze - Pe));
+        // 4. Shift the significand of Z into alignment: Am = Zm ≫ Acnt
+        // assign Am = Zm >> Acnt;
+        assign Am = (Pe>=Ze) ? (Zm >> Acnt) : (Pm >> Acnt);
+        // assign lost = (Pe>=Ze) ? Zm&((32'hFFFFFFFF)>>(32-Acnt)) : Pm&((32'hFFFFFFFF)>>(32-Acnt));
+        assign sticky = (Pe>=Ze) ? (Am==0)&(Zm!=0) : (Am==0)&(Pm!=0); // ensures that Pm or Zm is not shifted all the way out
+        // assign sticky = {11'b0,(puf&~(|Am[31:20])),Am[19:0]};
+        // assign Am = Am|{31'b0,sticky};
+        // 5. Add the aligned significands: Sm = Pm + Am
+        always_comb begin
+                if (add)
+                        if (sub) // subtraction
+                                if (puf) begin // if P has underflow
+                                        Sm = Zm - Pm;
+                                        sign = (~((xzero^yzero)&zzero)&z[15]); // special case if x|y&z are zero and signs of p and z differ, result is positive zero
+                                end
+                                else begin // otherwise compute regular subtraction
+                                        if (Pe>Ze) begin // need to subtract smaller from larger
+                                                Sm = Pm - Am;
+                                                sign = (x[15] ^ y[15]); end
+                                        else if (Pe<Ze) begin
+                                                Sm = Zm - Am;
+                                                sign = z[15]; end
+                                        else            // same size exponent
+                                                if (Pm>Zm) begin // check which mantissa is larger
+                                                        Sm = Pm - Zm;
+                                                        sign = (x[15] ^ y[15]); end
+                                                else if (Pm<Zm) begin
+                                                        Sm = Zm - Pm;
+                                                        sign = z[15]; end
+                                                else begin
+                                                        Sm = 0;
+                                                        sign = 0; end
+                                end
+                        else begin // addition
+                                sign = z[15]; // sign will remain the same
+                                if (Pe>=Ze)     Sm = Pm + Am;
+                                // else if (puf)   Sm = Zm + Pm;
+                                else            Sm = Zm + Am;
+                                end
+                else  begin 
+                        Sm = Pm;
+                        sign = x[15]^y[15]; 
+                        end
+        // 6. Find the leading 1 for normalization shift: Mcnt = # of bits to shift
+        // 7. Shift the result to renormalize: Mm = Sm ≪ Mcnt; Me = Pe – Mcnt
+        end
+        always_comb begin
+                ld = Sm[31:9];
+                Mcnt = 0;
+                while (ld[22] == 1'b0 && Mcnt < 23) begin
+                        ld = ld << 1;
+                        Mcnt++;
+                end
+        end
+        // always_comb begin $display("Sm: %b, Mcnt: %b", Sm, Mcnt); end
+        always_comb if (Sm==0) begin // if mantissa is zero, after fma, assign zero output
+                        Mm = 0;
+                        Me = 0; end
+                else begin
+                        Mm = (Sm << Mcnt); // shift so that implicit one is in msb of Mm
+                        Me = (puf&~add) ? 6'b0 : ((Pe>=Ze) ? (Pe - Mcnt + 1) : (Ze - Mcnt + 1)); end
+        // always_comb if(x==16'h87fe) $display("x: %h, y: %h, z: %h ",x,y,z, "Pm: %b, Sm: %b, Mcnt: %b, Me: %b ", Pm,Sm,Mcnt,Me,"mul: %b, add: %b",mul,add);
+
+        assign l = Mm[21]; // least significant bit
+        assign r = Mm[20]; // rounding bit
+        assign t = (|Mm[19:0])|(|sticky); // sticky bits
+        assign rnd = (rne&(r&(l|t))) | (rp&(~sign)&(r|t)) | (rn&(sign)&(r|t));// | (Mm[30:21])==(Zm[29:20]);
+
+        // if rnd on maxnum, round to inf
+        assign incr = ((&Mm[30:21])&rnd); // if rounding and mantissa is all 1s, need to increment exponent
+        assign inf = (incr&(Me>=30)); // if rounding maxnum, need to change to inf
+        assign Rm = (Mm[30:21]+10'b00000_00001); // mantissa after rounding
+        assign rnzero = (rn&({sign, Me[4:0], Mm[30:21]}==0)&sub); // special case in rn if p and z result in zero after subtraction
+        // detect flags
+        assign nv = nan;
+        assign of = (~(nan|zinf)&((Me>=31)&(Mm!=0)))|(pof&~add)|inf; // set overflow if number is greater than maxnum
+        assign uf = puf&(~add); // Do not need to set underflow
+        assign nx = puf|(r|t)|rnd; // set inexact flag for product underflow or R|G|T|Overflow
+        // always_comb if (of) $display("x: %h, y: %h, z: %h ",x,y,z,"Mm %b: , l: %b, r: %b, t: %b ",Mm[30:22],l,r,t,"sticky: %b",sticky," puf: %b",puf, "\nTm: %b, Pm: %b, Am: %b, inf: %b, incr: %b",Tm,Pm,Am,inf,incr);
+        
+        // assign result
+        always_comb
+                if (nan) result = {1'b0, 5'b11111, 10'b10000_00000};
+                else if ((xinf|yinf)) result = {(x[15]^y[15]), 5'b11111, 10'b00000_00000};
+                else if ((xzero|yzero)&mul&add) result = (zzero) ? {(x[15]^y[15])&z[15],15'b0} : z;
+                else if (inf) result = {z[15], 5'b11111, 10'b00000_00000};
+                else if (zinf) result = z;
+                else if (of) result = (rz|(rn&~sign)|(rp&sign)) ? {sign, 5'b11110, 10'b11111_11111} : {sign, 5'b11111, 10'b0};
+                else if (uf) result = {sign, 5'b00000, 10'b0};
+                else if (rnd&incr) result = {sign, (Me[4:0]+5'b00001), 10'b0};
+                else if (rnzero) result = {1'b1, Me[4:0], Mm[30:21]};
+                else if (rnd) result = {sign, Me[4:0], Rm};
+                else result = {sign, Me[4:0], Mm[30:21]};
+
+        // assign flags
+        assign flags = {nv, of, uf, nx}; // invalid, overflow, underflow, inexact
+endmodule*/
+
+module fma_special(input logic [15:0] x, y, z,
+        input logic mul, add, negp, negz,
+        input logic [1:0] roundmode, // roundtozero (rz)=00, roundtoeven (rne)=01, rounddown (rn)=10, round up (rp)=11
+        output logic [15:0] result,
+        output logic [3:0] flags);
+
+        logic [15:0] Xm, Ym;
+        logic [31:0] Zm, Pm, Am;
+        logic [31:0] Sm;
+        logic [31:0] Mm;
+        logic [9:0] Rm;
+        logic [22:0] ld;
+        logic [5:0] Xe, Ye, Ze, Pe, Acnt, Mcnt, Me;
+        logic sub, puf, pof, sign, sticky;
+        logic xzero, yzero, zzero, xinf, yinf, zinf, nan, sn; // special cases
+        logic rz, rne, rn, rp; // rounding mode
+        logic l, g, r, t; // least significant, rounding and sticky bits
+        logic rnd, incr, inf, rnzero;
+        logic nv, of, uf, nx; // flags
+        
+        unpack unpack(mul,add,x,y,z,xzero,yzero,zzero,xinf,yinf,zinf,nan,Xm,Ym,Zm,Xe,Ye,Ze);
+
+        // determine rounding mode
+        assign rz = (roundmode==2'b00);
+        assign rne = (roundmode==2'b01);
+        assign rn = (roundmode==2'b10);
+        assign rp = (roundmode==2'b11);
+
+        assign sub = ((x[15] ^ y[15]) ^ z[15]); // if signs of x*y and z differ, subtraction will occur, else addition
+        
+        product product(mul,xzero,yzero,Xm,Ym,Xe,Ye,Pm,Pe,puf,pof);
+        
+        alignment alignment(Pm,Zm,Pe,Ze,Am);
+        // assign lost = (Pe>=Ze) ? Zm&((32'hFFFFFFFF)>>(32-Acnt)) : Pm&((32'hFFFFFFFF)>>(32-Acnt));
+        // 5. Add the aligned significands: Sm = Pm + Am
+        sum sum(add,sub,puf,xzero,yzero,zzero,x[15],y[15],z[15],Pm,Zm,Am,Pe,Ze,Sm,sign,sticky);
+        
+        normalizer normalizer(puf,add,Sm,Pe,Ze,Mm,Me);
+        
+        assign l = Mm[21]; // least significant bit
+        assign r = Mm[20]; // rounding bit
+        assign t = (|Mm[19:0])|(|sticky); // sticky bits
+        assign rnd = (rne&(r&(l|t))) | (rp&(~sign)&(r|t)) | (rn&(sign)&(r|t));// | (Mm[30:21])==(Zm[29:20]);
+
+        // if rnd on maxnum, round to inf
+        assign incr = ((&Mm[30:21])&rnd); // if rounding and mantissa is all 1s, need to increment exponent
+        assign inf = (incr&(Me>=30)); // if rounding maxnum, need to change to inf
+        assign Rm = (Mm[30:21]+10'b00000_00001); // mantissa after rounding
+        assign rnzero = (rn&({sign, Me[4:0], Mm[30:21]}==0)&sub); // special case in rn if p and z result in zero after subtraction
+        // detect flags
+        assign nv = nan;
+        assign of = (~(nan|zinf)&((Me>=31)&(Mm!=0)))|(pof&~add)|inf; // set overflow if number is greater than maxnum
+        assign uf = puf&(~add); // Do not need to set underflow
+        assign nx = puf|(r|t)|rnd; // set inexact flag for product underflow or R|G|T|Overflow
+        
+        // assign result
+        always_comb
+                if (nan) result = {1'b0, 5'b11111, 10'b10000_00000};
+                else if ((xinf|yinf)) result = {(x[15]^y[15]), 5'b11111, 10'b00000_00000};
+                else if (rnzero) result = {1'b1, Me[4:0], Mm[30:21]};
+                else if ((xzero|yzero)&mul&add) result = (zzero) ? {(x[15]^y[15])&z[15],15'b0} : z;
+                else if (inf) result = {z[15], 5'b11111, 10'b00000_00000};
+                else if (zinf) result = z;
+                else if (of) result = (rz|(rn&~sign)|(rp&sign)) ? {sign, 5'b11110, 10'b11111_11111} : {sign, 5'b11111, 10'b0};
+                else if (uf) result = {sign, 5'b00000, 10'b0};
+                else if (rnd&incr) result = {sign, (Me[4:0]+5'b00001), 10'b0};
+                else if (rnd) result = {sign, Me[4:0], Rm};
+                else result = {sign, Me[4:0], Mm[30:21]};
+
+        // assign flags
+        assign flags = {nv, of, uf, nx}; // invalid, overflow, underflow, inexact
+endmodule
+
+module unpack(
+        input logic mul, add,
+        input [15:0] x, y, z,
+        output xzero, yzero, zzero, xinf, yinf, zinf, nan,
+        output [15:0] Xm, Ym,
+        output [31:0] Zm,
+        output [5:0] Xe, Ye, Ze
+);
+        // check for special cases in inputs
+        assign xzero = (x[14:0]==0); // check if any inputs are zero
+        assign yzero = (y[14:0]==0);
+        assign zzero = (z[14:0]==0);
+        assign xinf = (x[14:0]==15'h7c00); // check if any inputs are infinity
+        assign yinf = (y[14:0]==15'h7c00);
+        assign zinf = (z[14:0]==15'h7c00);
+        assign nan = (x[14:10]==5'h1f)&(x[9:0]!=0)|(y[14:10]==5'h1f)&(y[9:0]!=0)|(z[14:10]==5'h1f)&(z[9:0]!=0) // checks for any nan input
+                        |(xzero&yinf&mul)|(yzero&xinf&mul)|((xinf|yinf)&zinf&((x[15]^y[15])^z[15])); // checks for invalid operations including inf*0 and inf-inf
+        
+        // assign mantissas and exponents
+        assign Xm = xzero ? 16'b0 : {1'b1, x[9:0], 5'b0}; // assign mantissas
+        assign Ym = (add&~mul)|yzero ? 16'b0 : {1'b1, y[9:0], 5'b0}; // also check if only multiply, in which y=1
+        assign Zm = (zzero|(mul&~add)) ? 32'b0 : {2'b01, z[9:0], 20'b0}; // also check if only multiply, in which z=0
+        assign Xe = {1'b0, x[14:10]}; // assign exponents
+        assign Ye = (add&~mul) ? 6'b001111 : {1'b0, y[14:10]}; // again check if y=1
+        assign Ze = (mul&~add) ? 6'b0 : {1'b0, z[14:10]}; // again check if z=0
+
+endmodule
+
+module product(
+        input logic mul, xzero, yzero,
+        input logic [15:0] Xm, Ym,
+        input logic [5:0] Xe, Ye,
+        output logic [31:0] Pm,
+        output logic [5:0] Pe,
+        output logic puf, pof
+);
+        logic [31:0] Tm;
+        logic [5:0] Tcnt;
+
+        assign puf = (Xe + Ye) < 15; // precheck if P will have underflow
+        assign pof = (Pe>30&Pm!=0); // precheck if P will have overflow (only necessary if add==0)
+        assign Tcnt = puf ? (15 - (Xe + Ye) + 1) : 6'b0; // if P has underflow, determine shift amount to normalize Pm with Pe==0
+        // 1. Multiply the significands of X and Y: Pm = Xm × Ym
+        assign Tm = Xm * Ym; // temporary Pm
+        always_comb begin // block for assigning Pm
+                if (mul==0)             Pm = {1'b0, Xm, 15'b0}; // if no multiply, Pm = Xm
+                else if (xzero|yzero)   Pm = 32'b0; // if either is 0, Pm = 0
+                // else if (Tcnt>=11&puf)  Pm = {}
+                else if (Tm[31])        Pm = Tm >> (Tcnt+1); // if Tm has msb set, shift so that there is always a zero in msb of Pm
+                else                    Pm = Tm >> Tcnt;
+        end
+        // 2. Add the exponents of X and Y: Pe = Xe + Ye – bias
+        assign Pe = puf ? 6'b0 : ((Tm[31]) ? (Xe + Ye - 15 + 1) : (Xe + Ye - 15)); // need to check for carry bit in Pm, if set than increment Pe
+endmodule
+
+module alignment(
+        input logic [31:0] Pm, Zm,
+        input logic [5:0] Pe, Ze,
+        output logic [31:0] Am
+);
+        logic [5:0] Acnt;
+        assign Acnt = ((Pe>=Ze) ? (Pe - Ze) : (Ze - Pe));
+        assign Am = (Pe>=Ze) ? (Zm >> Acnt) : (Pm >> Acnt);
+endmodule
+
+module sum(
+        input logic add, sub, puf,
+        input logic xzero, yzero, zzero, xsign, ysign, zsign,
+        input logic [31:0] Pm, Zm, Am,
+        input logic [5:0] Pe, Ze,
+        output logic [31:0] Sm,
+        output logic sign, sticky
+);
+        always_comb begin
+                if (add)
+                        if (sub) // subtraction
+                                if (puf) begin // if P has underflow
+                                        Sm = Zm - Pm;
+                                        sign = (~((xzero^yzero)&zzero)&zsign); // special case if x|y&z are zero and signs of p and z differ, result is positive zero
+                                end
+                                else begin // otherwise compute regular subtraction
+                                        if (Pe>Ze) begin // need to subtract smaller from larger
+                                                Sm = Pm - Am;
+                                                sign = (xsign ^ ysign); end
+                                        else if (Pe<Ze) begin
+                                                Sm = Zm - Am;
+                                                sign = zsign; end
+                                        else            // same size exponent
+                                                if (Pm>Zm) begin // check which mantissa is larger
+                                                        Sm = Pm - Zm;
+                                                        sign = (xsign ^ ysign); end
+                                                else if (Pm<Zm) begin
+                                                        Sm = Zm - Pm;
+                                                        sign = zsign; end
+                                                else begin
+                                                        Sm = 0;
+                                                        sign = 0; end
+                                end
+                        else begin // addition
+                                sign = zsign; // sign will remain the same
+                                if (Pe>=Ze)     Sm = Pm + Am;
+                                // else if (puf)   Sm = Zm + Pm;
+                                else            Sm = Zm + Am;
+                                end
+                else  begin 
+                        Sm = Pm;
+                        sign = xsign^ysign; 
+                        end
+        end
+        assign sticky = (Pe>=Ze) ? (Am==0)&(Zm!=0) : (Am==0)&(Pm!=0); // ensures that Pm or Zm is not shifted all the way out
+endmodule
+
+module normalizer(
+        input logic puf, add,
+        input logic [31:0] Sm,
+        input logic [5:0] Pe, Ze,
+        output logic [31:0] Mm,
+        output logic [5:0] Me
+);
+        logic [22:0] lzd;
+        logic [5:0] Mcnt;
+        always_comb begin
+                lzd = Sm[31:9];
+                Mcnt = 0;
+                while (lzd[22] == 1'b0 && Mcnt < 23) begin
+                        lzd = lzd << 1;
+                        Mcnt++;
+                end
+        end/*
+        always_comb
+                casez (Sm[31:9]) // check for leading one and determine how many shifts to put it in msb
+                        23'b1??????????????????????: Mcnt = 0;
+                        23'b01?????????????????????: Mcnt = 1;
+                        23'b001????????????????????: Mcnt = 2;
+                        23'b0001???????????????????: Mcnt = 3;
+                        23'b00001??????????????????: Mcnt = 4;
+                        23'b000001?????????????????: Mcnt = 5;
+                        23'b0000001????????????????: Mcnt = 6;
+                        23'b00000001???????????????: Mcnt = 7;
+                        23'b000000001??????????????: Mcnt = 8;
+                        23'b0000000001?????????????: Mcnt = 9;
+                        23'b00000000001????????????: Mcnt = 10;
+                        23'b000000000001???????????: Mcnt = 11;
+                        23'b0000000000001??????????: Mcnt = 12;
+                        23'b00000000000001?????????: Mcnt = 13;
+                        23'b000000000000001????????: Mcnt = 14;
+                        23'b0000000000000001???????: Mcnt = 15;
+                        23'b00000000000000001??????: Mcnt = 16;
+                        23'b000000000000000001?????: Mcnt = 17;
+                        23'b0000000000000000001????: Mcnt = 18;
+                        23'b00000000000000000001???: Mcnt = 19;
+                        23'b000000000000000000001??: Mcnt = 20;
+                        23'b0000000000000000000001?: Mcnt = 21;
+                        23'b00000000000000000000001: Mcnt = 22;
+                        default: Mcnt = 0;
+                endcase*/
+        always_comb 
+                if (Sm==0) begin // if mantissa is zero, after fma, assign zero output
+                        Mm = 0;
+                        Me = 0; end
+                else begin
+                        Mm = (Sm << Mcnt); // shift so that implicit one is in msb of Mm
+                        Me = (puf&~add) ? 6'b0 : ((Pe>=Ze) ? (Pe - Mcnt + 1) : (Ze - Mcnt + 1)); end
 endmodule
